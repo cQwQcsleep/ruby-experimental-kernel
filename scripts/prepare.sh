@@ -155,4 +155,59 @@ else
   echo "[prepare] 跳过 LZ4KD 移植（ENABLE_LZ4KD=$ENABLE_LZ4KD）"
 fi
 
+# ---------------------------------------------------------------- 3) 修复 SUSFS/4.19 缺失的 mmap 兼容宏
+# 背景：HyperMoon(4.19) 使用 mm->mmap_sem，但 fs/proc/task_mmu.c 的 SUSFS SUS_MAP
+# 补丁块调用了 5.x 才有的 mmap_read_unlock()，且树内没有 include/linux/mmap_lock.h，
+# 导致编译报 “implicit declaration of function 'mmap_read_unlock'”。
+# 这里补一个 4.19 兼容头并 include，语义与内核其它处 down_read/up_read(mmap_sem) 完全一致。
+if [ "${ENABLE_MMAP_COMPAT:-true}" = "true" ]; then
+  if [ ! -f include/linux/mmap_lock.h ]; then
+    cat > include/linux/mmap_lock.h <<'EOF'
+#ifndef _LINUX_MMAP_LOCK_H
+#define _LINUX_MMAP_LOCK_H
+
+/*
+ * 4.19 compatibility shim for the mmap_lock API introduced in 5.8.
+ * On 4.19 the same lock is mm->mmap_sem; these macros map 1:1 onto it.
+ */
+#include <linux/mm_types.h>
+#include <linux/sched/mm.h>
+
+#define mmap_read_lock(mm)      down_read(&(mm)->mmap_sem)
+#define mmap_read_unlock(mm)    up_read(&(mm)->mmap_sem)
+#define mmap_write_lock(mm)     down_write(&(mm)->mmap_sem)
+#define mmap_write_unlock(mm)   up_write(&(mm)->mmap_sem)
+
+#endif /* _LINUX_MMAP_LOCK_H */
+EOF
+    echo "[prepare] created include/linux/mmap_lock.h (4.19 compat)"
+  else
+    echo "[prepare] include/linux/mmap_lock.h already exists"
+  fi
+
+  if ! grep -q "linux/mmap_lock.h" fs/proc/task_mmu.c; then
+    # 在 "internal.h" 之后插入 include，确保 mm_types.h 已可见（用 | 作分隔符，避免与 # 冲突）
+    sed -i 's|^#include "internal.h"|#include "internal.h"\n#include <linux/mmap_lock.h>|' fs/proc/task_mmu.c
+    if grep -q "linux/mmap_lock.h" fs/proc/task_mmu.c; then
+      echo "[prepare] patched fs/proc/task_mmu.c (include mmap_lock.h)"
+    else
+      echo "[prepare][WARN] task_mmu.c include 注入失败，回退：直接追加宏定义"
+      cat >> fs/proc/task_mmu.c <<'EOF'
+
+/* 4.19 mmap_lock compat fallback */
+#ifndef mmap_read_unlock
+#define mmap_read_lock(mm)      down_read(&(mm)->mmap_sem)
+#define mmap_read_unlock(mm)    up_read(&(mm)->mmap_sem)
+#define mmap_write_lock(mm)     down_write(&(mm)->mmap_sem)
+#define mmap_write_unlock(mm)   up_write(&(mm)->mmap_sem)
+#endif
+EOF
+    fi
+  else
+    echo "[prepare] fs/proc/task_mmu.c already includes mmap_lock.h"
+  fi
+else
+  echo "[prepare] 跳过 mmap 兼容修复（ENABLE_MMAP_COMPAT=$ENABLE_MMAP_COMPAT）"
+fi
+
 echo "[prepare] done"
