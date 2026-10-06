@@ -7,9 +7,9 @@ on:
   workflow_dispatch:
     inputs:
       kernel_branch:
-        description: "Branch to use for kernel source (defaults to 'moon')"
+        description: "Branch to use for kernel source (leave blank to use the branch in config json)"
         required: false
-        default: "moon"
+        default: ""
         type: string
       config_type:
         description: "Choose a config type"
